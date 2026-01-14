@@ -1,0 +1,13 @@
+# Record Variables Configuration File
+# This file specifies which RTDE variables to record
+# Format: One variable per line, or comma-separated on one line
+# Lines starting with # are treated as comments and ignored
+# Empty lines are also ignored
+# https://docs.universal-robots.com/tutorials/communication-protocol-tutorials/rtde-guide.html
+
+# Example: One variable per line
+timestamp
+actual_TCP_force
+
+# Example: Comma-separated format (also supported)
+# actual_TCP_speed, target_TCP_pose, target_TCP_speed
