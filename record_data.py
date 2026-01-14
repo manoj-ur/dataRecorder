@@ -162,6 +162,205 @@ def get_file_size_mb(filepath):
     return 0.0
 
 
+def write_csv_header(file_handle, variables, rtde_r):
+    """Write CSV header to file.
+    
+    Args:
+        file_handle: Open file handle
+        variables (list): List of variable names
+        rtde_r: RTDEReceiveInterface instance
+    """
+    # Mapping of variable names to their sizes (number of columns)
+    # Size 1 = single value, Size > 1 = vector
+    variable_sizes = {
+        # Single values
+        "timestamp": 1,
+        "actual_execution_time": 1,
+        "robot_mode": 1,
+        "robot_status_bits": 1,
+        "safety_mode": 1,
+        "safety_status_bits": 1,
+        "speed_scaling": 1,
+        "target_speed_fraction": 1,
+        "actual_momentum": 1,
+        "actual_main_voltage": 1,
+        "actual_robot_voltage": 1,
+        "actual_robot_current": 1,
+        "actual_digital_input_bits": 1,
+        "actual_digital_output_bits": 1,
+        "runtime_state": 1,
+        "standard_analog_input0": 1,
+        "standard_analog_input1": 1,
+        "standard_analog_output0": 1,
+        "standard_analog_output1": 1,
+        "payload": 1,
+        "speed_scaling_combined": 1,
+        # Vectors of size 6
+        "target_q": 6,
+        "target_qd": 6,
+        "target_qdd": 6,
+        "target_current": 6,
+        "target_moment": 6,
+        "actual_q": 6,
+        "actual_qd": 6,
+        "actual_current": 6,
+        "joint_control_output": 6,
+        "actual_TCP_pose": 6,
+        "actual_TCP_speed": 6,
+        "actual_TCP_force": 6,
+        "target_TCP_pose": 6,
+        "target_TCP_speed": 6,
+        "joint_temperatures": 6,
+        "actual_joint_voltage": 6,
+        "payload_inertia": 6,
+        "ft_raw_wrench": 6,
+        "actual_current_as_torque": 6,
+        # Vectors of size 3
+        "actual_tool_accelerometer": 3,
+        "payload_cog": 3,
+        # Vectors of size 6 (joint_mode is int32 vector)
+        "joint_mode": 6,
+    }
+    
+    header_parts = []
+    for var in variables:
+        size = variable_sizes.get(var, 1)  # Default to size 1 if unknown
+        if size > 1:
+            for j in range(size):
+                header_parts.append(f"{var}_{j}")
+        else:
+            header_parts.append(var)
+    
+    file_handle.write(",".join(header_parts) + "\n")
+    file_handle.flush()
+
+
+def write_csv_row(file_handle, variables, rtde_r):
+    """Write a single row of data to CSV file.
+    
+    Args:
+        file_handle: Open file handle
+        variables (list): List of variable names
+        rtde_r: RTDEReceiveInterface instance
+    """
+    row_parts = []
+    for var in variables:
+        try:
+            # Single values
+            if var == "timestamp":
+                row_parts.append(f"{rtde_r.getTimestamp():.6f}")
+            elif var == "actual_execution_time":
+                row_parts.append(f"{rtde_r.getActualExecutionTime():.6f}")
+            elif var == "robot_mode":
+                row_parts.append(f"{float(rtde_r.getRobotMode()):.6f}")
+            elif var == "robot_status_bits":
+                row_parts.append(f"{float(rtde_r.getRobotStatus()):.6f}")
+            elif var == "safety_mode":
+                row_parts.append(f"{float(rtde_r.getSafetyMode()):.6f}")
+            elif var == "safety_status_bits":
+                row_parts.append(f"{float(rtde_r.getSafetyStatusBits()):.6f}")
+            elif var == "speed_scaling":
+                row_parts.append(f"{rtde_r.getSpeedScaling():.6f}")
+            elif var == "target_speed_fraction":
+                row_parts.append(f"{rtde_r.getTargetSpeedFraction():.6f}")
+            elif var == "actual_momentum":
+                row_parts.append(f"{rtde_r.getActualMomentum():.6f}")
+            elif var == "actual_main_voltage":
+                row_parts.append(f"{rtde_r.getActualMainVoltage():.6f}")
+            elif var == "actual_robot_voltage":
+                row_parts.append(f"{rtde_r.getActualRobotVoltage():.6f}")
+            elif var == "actual_robot_current":
+                row_parts.append(f"{rtde_r.getActualRobotCurrent():.6f}")
+            elif var == "actual_digital_input_bits":
+                row_parts.append(f"{float(rtde_r.getActualDigitalInputBits()):.6f}")
+            elif var == "actual_digital_output_bits":
+                row_parts.append(f"{float(rtde_r.getActualDigitalOutputBits()):.6f}")
+            elif var == "runtime_state":
+                row_parts.append(f"{float(rtde_r.getRuntimeState()):.6f}")
+            elif var == "standard_analog_input0":
+                row_parts.append(f"{rtde_r.getStandardAnalogInput0():.6f}")
+            elif var == "standard_analog_input1":
+                row_parts.append(f"{rtde_r.getStandardAnalogInput1():.6f}")
+            elif var == "standard_analog_output0":
+                row_parts.append(f"{rtde_r.getStandardAnalogOutput0():.6f}")
+            elif var == "standard_analog_output1":
+                row_parts.append(f"{rtde_r.getStandardAnalogOutput1():.6f}")
+            elif var == "payload":
+                row_parts.append(f"{rtde_r.getPayload():.6f}")
+            elif var == "speed_scaling_combined":
+                row_parts.append(f"{rtde_r.getSpeedScalingCombined():.6f}")
+            # Vector values (size 6)
+            elif var == "target_q":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getTargetQ()])
+            elif var == "target_qd":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getTargetQd()])
+            elif var == "target_qdd":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getTargetQdd()])
+            elif var == "target_current":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getTargetCurrent()])
+            elif var == "target_moment":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getTargetMoment()])
+            elif var == "actual_q":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getActualQ()])
+            elif var == "actual_qd":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getActualQd()])
+            elif var == "actual_current":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getActualCurrent()])
+            elif var == "joint_control_output":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getJointControlOutput()])
+            elif var == "actual_TCP_pose":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getActualTCPPose()])
+            elif var == "actual_TCP_speed":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getActualTCPSpeed()])
+            elif var == "actual_TCP_force":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getActualTCPForce()])
+            elif var == "target_TCP_pose":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getTargetTCPPose()])
+            elif var == "target_TCP_speed":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getTargetTCPSpeed()])
+            elif var == "joint_temperatures":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getJointTemperatures()])
+            elif var == "actual_joint_voltage":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getActualJointVoltage()])
+            elif var == "payload_inertia":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getPayloadInertia()])
+            elif var == "ft_raw_wrench":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getFtRawWrench()])
+            elif var == "actual_current_as_torque":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getActualCurrentAsTorque()])
+            # Vector values (size 3)
+            elif var == "actual_tool_accelerometer":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getActualToolAccelerometer()])
+            elif var == "payload_cog":
+                row_parts.extend([f"{v:.6f}" for v in rtde_r.getPayloadCog()])
+            # Vector values (size 6, int32)
+            elif var == "joint_mode":
+                row_parts.extend([f"{float(v):.6f}" for v in rtde_r.getJointMode()])
+            else:
+                # Unknown variable - try to write placeholder
+                # Check if it might be a vector by looking at the header
+                row_parts.append("0.000000")
+        except Exception as e:
+            # If we can't get the variable, write placeholder
+            # For vectors, we need to write multiple placeholders
+            # We'll use the header size to determine how many
+            var_size = 1  # Default to 1
+            if var in ["target_q", "target_qd", "target_qdd", "target_current", "target_moment",
+                      "actual_q", "actual_qd", "actual_current", "joint_control_output",
+                      "actual_TCP_pose", "actual_TCP_speed", "actual_TCP_force",
+                      "target_TCP_pose", "target_TCP_speed", "joint_temperatures",
+                      "actual_joint_voltage", "payload_inertia", "ft_raw_wrench",
+                      "actual_current_as_torque", "joint_mode"]:
+                var_size = 6
+            elif var in ["actual_tool_accelerometer", "payload_cog"]:
+                var_size = 3
+            
+            row_parts.extend(["0.000000"] * var_size)
+    
+    file_handle.write(",".join(row_parts) + "\n")
+    file_handle.flush()
+
+
 def main(args):
     """Main entry point allowing external calls
 
@@ -197,8 +396,9 @@ def main(args):
                                                     file_number if (max_file_size_mb or max_duration_seconds) else None,
                                                     base_timestamp)
     
-    # Start first file
-    rtde_r.startFileRecording(current_output_file, record_variables)
+    # Open first file for manual recording
+    current_file_handle = open(current_output_file, 'w')
+    write_csv_header(current_file_handle, record_variables, rtde_r)
     file_start_time = time.time()
     print(f"Data recording started, output file: {current_output_file}")
     if max_file_size_mb:
@@ -214,6 +414,9 @@ def main(args):
     try:
         while True:
             t_start = rtde_r.initPeriod()
+            
+            # Write data row
+            write_csv_row(current_file_handle, record_variables, rtde_r)
             
             # Check if we need to split files
             if (max_file_size_mb or max_duration_seconds) and samples_since_last_check >= check_interval:
@@ -237,12 +440,16 @@ def main(args):
                 
                 # Split to new file if needed
                 if should_split:
-                    rtde_r.stopFileRecording()
+                    # Close current file
+                    current_file_handle.close()
                     print(f"\nFile split: {split_reason}")
                     file_number += 1
                     current_output_file = add_timestamp_to_filename(args.output, file_number, base_timestamp)
+                    
+                    # Open new file
+                    current_file_handle = open(current_output_file, 'w')
+                    write_csv_header(current_file_handle, record_variables, rtde_r)
                     file_start_time = time.time()
-                    rtde_r.startFileRecording(current_output_file, record_variables)
                     print(f"New file started: {current_output_file}")
             
             if i % 10 == 0:
@@ -261,7 +468,7 @@ def main(args):
             samples_since_last_check += 1
 
     except KeyboardInterrupt:
-        rtde_r.stopFileRecording()
+        current_file_handle.close()
         print(f"\nData recording stopped. Total samples: {i}")
         if file_number > 1:
             print(f"Recorded {file_number} file(s)")
