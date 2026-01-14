@@ -5,6 +5,14 @@ import sys
 from datetime import datetime
 import os
 
+# RuntimeState enum values
+RUNTIME_STATE_STOPPING = 0
+RUNTIME_STATE_STOPPED = 1
+RUNTIME_STATE_PLAYING = 2
+RUNTIME_STATE_PAUSING = 3
+RUNTIME_STATE_PAUSED = 4
+RUNTIME_STATE_RESUMING = 5
+
 
 def parse_args(args):
     """Parse command line parameters
@@ -390,21 +398,18 @@ def main(args):
     max_file_size_mb = args.max_file_size
     max_duration_seconds = args.max_duration * 60.0 if args.max_duration else None
     file_number = 1
-    # Generate base timestamp for consistent naming across file splits
-    base_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    current_output_file = add_timestamp_to_filename(args.output, 
-                                                    file_number if (max_file_size_mb or max_duration_seconds) else None,
-                                                    base_timestamp)
+    current_session_timestamp = None  # Timestamp for current recording session
+    current_output_file = None
     
-    # Open first file for manual recording
-    current_file_handle = open(current_output_file, 'w')
-    write_csv_header(current_file_handle, record_variables, rtde_r)
-    file_start_time = time.time()
-    print(f"Data recording started, output file: {current_output_file}")
-    if max_file_size_mb:
-        print(f"  Max file size: {max_file_size_mb} MB")
-    if max_duration_seconds:
-        print(f"  Max duration: {args.max_duration} minutes per file")
+    # Recording state tracking
+    is_recording = False
+    current_file_handle = None
+    stable_state_count = 0  # Count consecutive checks with same state
+    last_runtime_state = None
+    stable_state_threshold = 3  # Require 3 consecutive checks (3 seconds) of stable state
+    has_recorded_before = False  # Track if we've recorded in this session
+    
+    print("Waiting for robot to be in PLAYING state to start recording...")
     print("Press [Ctrl-C] to end recording.")
     
     i = 0
@@ -415,51 +420,128 @@ def main(args):
         while True:
             t_start = rtde_r.initPeriod()
             
-            # Write data row
-            write_csv_row(current_file_handle, record_variables, rtde_r)
-            
-            # Check if we need to split files
-            if (max_file_size_mb or max_duration_seconds) and samples_since_last_check >= check_interval:
+            # Check runtime_state periodically
+            if samples_since_last_check >= check_interval:
                 samples_since_last_check = 0
-                should_split = False
-                split_reason = ""
                 
-                # Check file size limit
-                if max_file_size_mb:
-                    current_size_mb = get_file_size_mb(current_output_file)
-                    if current_size_mb >= max_file_size_mb:
-                        should_split = True
-                        split_reason = f"file size ({current_size_mb:.2f} MB >= {max_file_size_mb} MB)"
-                
-                # Check duration limit
-                if max_duration_seconds:
-                    elapsed_seconds = time.time() - file_start_time
-                    if elapsed_seconds >= max_duration_seconds:
-                        should_split = True
-                        split_reason = f"duration ({elapsed_seconds/60:.1f} min >= {args.max_duration} min)"
-                
-                # Split to new file if needed
-                if should_split:
-                    # Close current file
-                    current_file_handle.close()
-                    print(f"\nFile split: {split_reason}")
-                    file_number += 1
-                    current_output_file = add_timestamp_to_filename(args.output, file_number, base_timestamp)
+                try:
+                    runtime_state = rtde_r.getRuntimeState()
                     
-                    # Open new file
-                    current_file_handle = open(current_output_file, 'w')
-                    write_csv_header(current_file_handle, record_variables, rtde_r)
-                    file_start_time = time.time()
-                    print(f"New file started: {current_output_file}")
+                    # Track stable state for debouncing
+                    if runtime_state == last_runtime_state:
+                        stable_state_count += 1
+                    else:
+                        stable_state_count = 0
+                        last_runtime_state = runtime_state
+                    
+                    # Start recording when PLAYING and not currently recording
+                    if runtime_state == RUNTIME_STATE_PLAYING and not is_recording:
+                        if stable_state_count >= stable_state_threshold:
+                            # Generate new timestamp for this recording session
+                            current_session_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                            
+                            # Reset file number for new session
+                            file_number = 1
+                            
+                            # Generate output filename with new timestamp
+                            current_output_file = add_timestamp_to_filename(args.output, 
+                                                                            file_number if (max_file_size_mb or max_duration_seconds or has_recorded_before) else None,
+                                                                            current_session_timestamp)
+                            
+                            # Open file and write header
+                            current_file_handle = open(current_output_file, 'w')
+                            write_csv_header(current_file_handle, record_variables, rtde_r)
+                            file_start_time = time.time()
+                            is_recording = True
+                            has_recorded_before = True
+                            stable_state_count = 0
+                            print(f"\nRobot is PLAYING - Recording started: {current_output_file}")
+                            if max_file_size_mb:
+                                print(f"  Max file size: {max_file_size_mb} MB")
+                            if max_duration_seconds:
+                                print(f"  Max duration: {args.max_duration} minutes per file")
+                    
+                    # Stop recording when not PLAYING and currently recording
+                    elif runtime_state != RUNTIME_STATE_PLAYING and is_recording:
+                        if stable_state_count >= 2:  # Require 2 seconds of stable non-PLAYING state
+                            if current_file_handle:
+                                current_file_handle.close()
+                                current_file_handle = None
+                            is_recording = False
+                            stable_state_count = 0
+                            state_names = {0: "STOPPING", 1: "STOPPED", 3: "PAUSING", 4: "PAUSED", 5: "RESUMING"}
+                            state_name = state_names.get(runtime_state, f"UNKNOWN({runtime_state})")
+                            print(f"\nRobot is {state_name} - Recording stopped")
+                
+                except Exception as e:
+                    # If we can't get runtime_state, continue but warn
+                    if is_recording:
+                        print(f"\nWarning: Could not check runtime_state: {e}")
             
+            # Write data row only if recording
+            if is_recording and current_file_handle:
+                write_csv_row(current_file_handle, record_variables, rtde_r)
+            
+                # Check if we need to split files (only when recording)
+                if is_recording and (max_file_size_mb or max_duration_seconds):
+                    should_split = False
+                    split_reason = ""
+                    
+                    # Check file size limit
+                    if max_file_size_mb:
+                        current_size_mb = get_file_size_mb(current_output_file)
+                        if current_size_mb >= max_file_size_mb:
+                            should_split = True
+                            split_reason = f"file size ({current_size_mb:.2f} MB >= {max_file_size_mb} MB)"
+                    
+                    # Check duration limit
+                    if max_duration_seconds:
+                        elapsed_seconds = time.time() - file_start_time
+                        if elapsed_seconds >= max_duration_seconds:
+                            should_split = True
+                            split_reason = f"duration ({elapsed_seconds/60:.1f} min >= {args.max_duration} min)"
+                    
+                    # Split to new file if needed
+                    if should_split:
+                        # Close current file
+                        if current_file_handle:
+                            current_file_handle.close()
+                        print(f"\nFile split: {split_reason}")
+                        file_number += 1
+                        current_output_file = add_timestamp_to_filename(args.output, file_number, current_session_timestamp)
+                        
+                        # Open new file
+                        current_file_handle = open(current_output_file, 'w')
+                        write_csv_header(current_file_handle, record_variables, rtde_r)
+                        file_start_time = time.time()
+                        print(f"New file started: {current_output_file}")
+            
+            # Status display
             if i % 10 == 0:
-                status_msg = f"{i:6d} samples"
-                if max_file_size_mb:
-                    current_size_mb = get_file_size_mb(current_output_file)
-                    status_msg += f" | Size: {current_size_mb:.2f} MB"
-                if max_duration_seconds:
-                    elapsed_seconds = time.time() - file_start_time
-                    status_msg += f" | Time: {elapsed_seconds/60:.1f} min"
+                try:
+                    runtime_state = rtde_r.getRuntimeState()
+                    state_names = {0: "STOPPING", 1: "STOPPED", 2: "PLAYING", 3: "PAUSING", 4: "PAUSED", 5: "RESUMING"}
+                    state_name = state_names.get(runtime_state, f"UNKNOWN({runtime_state})")
+                    
+                    if is_recording:
+                        # Show full status when recording
+                        status_msg = f"{i:6d} samples | State: {state_name} [RECORDING]"
+                        if max_file_size_mb:
+                            current_size_mb = get_file_size_mb(current_output_file)
+                            status_msg += f" | Size: {current_size_mb:.2f} MB"
+                        if max_duration_seconds and file_start_time:
+                            elapsed_seconds = time.time() - file_start_time
+                            status_msg += f" | Time: {elapsed_seconds/60:.1f} min"
+                    else:
+                        # Show only state when not recording
+                        status_msg = f"State: {state_name} [WAITING]"
+                except:
+                    # Fallback if we can't get runtime_state
+                    if is_recording:
+                        status_msg = f"{i:6d} samples [RECORDING]"
+                    else:
+                        status_msg = "State: UNKNOWN [WAITING]"
+                
                 sys.stdout.write("\r" + status_msg)
                 sys.stdout.flush()
             
@@ -468,9 +550,10 @@ def main(args):
             samples_since_last_check += 1
 
     except KeyboardInterrupt:
-        current_file_handle.close()
+        if current_file_handle:
+            current_file_handle.close()
         print(f"\nData recording stopped. Total samples: {i}")
-        if file_number > 1:
+        if is_recording and file_number > 1:
             print(f"Recorded {file_number} file(s)")
 
 
