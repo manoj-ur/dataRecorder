@@ -243,20 +243,23 @@ def write_csv_header(file_handle, variables, rtde_r):
     file_handle.flush()
 
 
-def write_csv_row(file_handle, variables, rtde_r):
+def write_csv_row(file_handle, variables, rtde_r, timestamp_offset=0.0):
     """Write a single row of data to CSV file.
     
     Args:
         file_handle: Open file handle
         variables (list): List of variable names
         rtde_r: RTDEReceiveInterface instance
+        timestamp_offset (float): Offset to convert RTDE timestamp to physical time (wall-clock time)
     """
     row_parts = []
     for var in variables:
         try:
             # Single values
             if var == "timestamp":
-                row_parts.append(f"{rtde_r.getTimestamp():.6f}")
+                # Convert RTDE timestamp (relative) to physical time (wall-clock)
+                physical_timestamp = rtde_r.getTimestamp() + timestamp_offset
+                row_parts.append(f"{physical_timestamp:.6f}")
             elif var == "actual_execution_time":
                 row_parts.append(f"{rtde_r.getActualExecutionTime():.6f}")
             elif var == "robot_mode":
@@ -409,6 +412,10 @@ def main(args):
     stable_state_threshold = 3  # Require 3 consecutive checks (3 seconds) of stable state
     has_recorded_before = False  # Track if we've recorded in this session
     
+    # Timestamp conversion: track first RTDE timestamp and corresponding wall-clock time
+    first_rtde_timestamp = None
+    timestamp_offset = 0.0  # Offset to convert RTDE timestamp to physical time
+    
     print("Waiting for robot to be in PLAYING state to start recording...")
     print("Press [Ctrl-C] to end recording.")
     
@@ -448,6 +455,11 @@ def main(args):
                                                                             file_number if (max_file_size_mb or max_duration_seconds or has_recorded_before) else None,
                                                                             current_session_timestamp)
                             
+                            # Capture first RTDE timestamp and corresponding wall-clock time for conversion
+                            first_rtde_timestamp = rtde_r.getTimestamp()
+                            wall_clock_time = time.time()
+                            timestamp_offset = wall_clock_time - first_rtde_timestamp
+                            
                             # Open file and write header
                             current_file_handle = open(current_output_file, 'w')
                             write_csv_header(current_file_handle, record_variables, rtde_r)
@@ -456,6 +468,7 @@ def main(args):
                             has_recorded_before = True
                             stable_state_count = 0
                             print(f"\nRobot is PLAYING - Recording started: {current_output_file}")
+                            print(f"  Timestamp conversion: RTDE timestamps converted to physical time")
                             if max_file_size_mb:
                                 print(f"  Max file size: {max_file_size_mb} MB")
                             if max_duration_seconds:
@@ -480,7 +493,7 @@ def main(args):
             
             # Write data row only if recording
             if is_recording and current_file_handle:
-                write_csv_row(current_file_handle, record_variables, rtde_r)
+                write_csv_row(current_file_handle, record_variables, rtde_r, timestamp_offset)
             
                 # Check if we need to split files (only when recording)
                 if is_recording and (max_file_size_mb or max_duration_seconds):

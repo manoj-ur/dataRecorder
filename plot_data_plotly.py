@@ -44,7 +44,7 @@ except ImportError:
 
 def convert_timestamps_from_filename(csv_file):
     """
-    Convert RTDE timestamps to real clock time using filename timestamp.
+    Convert timestamps to datetime. Handles both physical timestamps (Unix) and relative timestamps.
     
     Args:
         csv_file: Path to CSV file
@@ -52,21 +52,46 @@ def convert_timestamps_from_filename(csv_file):
     Returns:
         DataFrame with converted timestamps and file start time
     """
-    # Extract timestamp from filename
-    match = re.search(r'(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})', csv_file)
-    if match:
-        file_timestamp_str = match.group(1)
-        file_start_time = datetime.strptime(file_timestamp_str, "%Y-%m-%d_%H-%M-%S")
-    else:
-        # Fallback to file creation time
-        file_start_time = datetime.fromtimestamp(os.path.getctime(csv_file))
-    
     # Read CSV
     df = pd.read_csv(csv_file)
     
-    # Get first timestamp value
-    if len(df) > 0:
-        first_timestamp = df['timestamp'].iloc[0]
+    if len(df) == 0:
+        # Extract timestamp from filename as fallback
+        match = re.search(r'(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})', csv_file)
+        if match:
+            file_timestamp_str = match.group(1)
+            file_start_time = datetime.strptime(file_timestamp_str, "%Y-%m-%d_%H-%M-%S")
+        else:
+            file_start_time = datetime.fromtimestamp(os.path.getctime(csv_file))
+        return df, file_start_time
+    
+    first_timestamp = df['timestamp'].iloc[0]
+    
+    # Check if timestamp is a physical timestamp (Unix timestamp)
+    # Physical timestamps are typically > 1e9 (after year 2001)
+    # Relative timestamps from RTDE are typically < 1e6 (less than ~11 days)
+    is_physical_timestamp = first_timestamp > 1e9
+    
+    if is_physical_timestamp:
+        # Physical timestamps: Convert Unix timestamp directly to datetime
+        df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
+        df['real_time'] = df['datetime']
+        
+        # Calculate relative time from start of recording
+        first_datetime = df['datetime'].iloc[0]
+        df['relative_time'] = (df['datetime'] - first_datetime).dt.total_seconds()
+        
+        file_start_time = df['datetime'].iloc[0].to_pydatetime()
+    else:
+        # Relative timestamps: Use filename to determine start time (legacy support)
+        match = re.search(r'(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})', csv_file)
+        if match:
+            file_timestamp_str = match.group(1)
+            file_start_time = datetime.strptime(file_timestamp_str, "%Y-%m-%d_%H-%M-%S")
+        else:
+            # Fallback to file creation time
+            file_start_time = datetime.fromtimestamp(os.path.getctime(csv_file))
+        
         # Calculate controller start time
         controller_start_time = file_start_time - timedelta(seconds=first_timestamp)
         
@@ -74,13 +99,12 @@ def convert_timestamps_from_filename(csv_file):
         df['real_time'] = df['timestamp'].apply(
             lambda ts: controller_start_time + timedelta(seconds=ts)
         )
+        df['datetime'] = df['real_time']
         
         # Also add relative time from start of recording (in seconds)
         df['relative_time'] = df['timestamp'] - first_timestamp
-        
-        return df, file_start_time
-    else:
-        return df, file_start_time
+    
+    return df, file_start_time
 
 
 def read_all_csv_files(pattern="robot_data_*.csv", directory=".", specific_files=None):
@@ -154,11 +178,25 @@ def read_all_csv_files(pattern="robot_data_*.csv", directory=".", specific_files
     # Combine all dataframes
     if all_dataframes:
         combined_df = pd.concat(all_dataframes, ignore_index=True)
-        combined_df = combined_df.sort_values('real_time')
         
-        # Reset relative time to be from first recording
-        first_time = combined_df['real_time'].iloc[0]
-        combined_df['relative_time'] = (combined_df['real_time'] - first_time).dt.total_seconds()
+        # Sort by datetime/real_time (handle both datetime and timestamp formats)
+        if 'datetime' in combined_df.columns:
+            combined_df = combined_df.sort_values('datetime')
+            # Reset relative time to be from first recording
+            first_time = combined_df['datetime'].iloc[0]
+            combined_df['relative_time'] = (combined_df['datetime'] - first_time).dt.total_seconds()
+        elif 'real_time' in combined_df.columns:
+            combined_df = combined_df.sort_values('real_time')
+            # Reset relative time to be from first recording
+            first_time = combined_df['real_time'].iloc[0]
+            if isinstance(first_time, pd.Timestamp):
+                combined_df['relative_time'] = (combined_df['real_time'] - first_time).dt.total_seconds()
+            else:
+                combined_df['relative_time'] = (combined_df['real_time'] - first_time).apply(
+                    lambda x: x.total_seconds() if isinstance(x, timedelta) else x
+                )
+        else:
+            combined_df = combined_df.sort_values('timestamp')
         
         return combined_df, session_info
     else:
@@ -192,8 +230,21 @@ def plot_tcp_force_plotly(df, time_column='relative_time', save_path=None, show=
         vertical_spacing=0.1
     )
     
-    # Convert time column to numpy array for plotting
-    x_data = df[time_column].values
+    # Convert time column to appropriate format for plotting
+    if time_column == 'datetime' and 'datetime' not in df.columns:
+        # Fallback to real_time if datetime not available
+        time_column = 'real_time'
+    
+    if time_column in ['datetime', 'real_time']:
+        # For datetime columns, use datetime objects directly (Plotly handles them)
+        if time_column in df.columns:
+            x_data = df[time_column]
+        elif 'datetime' in df.columns:
+            x_data = df['datetime']
+        else:
+            x_data = df['relative_time'].values
+    else:
+        x_data = df[time_column].values
     
     # Plot forces (first 3 components)
     force_labels = ['X', 'Y', 'Z']
@@ -225,9 +276,18 @@ def plot_tcp_force_plotly(df, time_column='relative_time', save_path=None, show=
             )
     
     # Update axes labels
-    fig.update_xaxes(title_text=f"Time ({time_column})", row=2, col=1)
+    if time_column in ['datetime', 'real_time']:
+        x_label = "Time (datetime)"
+    else:
+        x_label = f"Time ({time_column})"
+    fig.update_xaxes(title_text=x_label, row=2, col=1)
     fig.update_yaxes(title_text="Force (N)", row=1, col=1)
     fig.update_yaxes(title_text="Torque (Nm)", row=2, col=1)
+    
+    # Format x-axis as datetime if using datetime column
+    if time_column in ['datetime', 'real_time'] and 'datetime' in df.columns:
+        fig.update_xaxes(type='date', row=1, col=1)
+        fig.update_xaxes(type='date', row=2, col=1)
     
     # Update layout
     fig.update_layout(
@@ -276,7 +336,21 @@ def plot_variables_plotly(df, variables, time_column='relative_time', save_path=
         vertical_spacing=0.05
     )
     
-    x_data = df[time_column].values
+    # Convert time column to appropriate format for plotting
+    if time_column == 'datetime' and 'datetime' not in df.columns:
+        # Fallback to real_time if datetime not available
+        time_column = 'real_time'
+    
+    if time_column in ['datetime', 'real_time']:
+        # For datetime columns, use datetime objects directly (Plotly handles them)
+        if time_column in df.columns:
+            x_data = df[time_column]
+        elif 'datetime' in df.columns:
+            x_data = df['datetime']
+        else:
+            x_data = df['relative_time'].values
+    else:
+        x_data = df[time_column].values
     
     for i, var in enumerate(variables):
         if var in df.columns:
@@ -296,7 +370,16 @@ def plot_variables_plotly(df, variables, time_column='relative_time', save_path=
             print(f"Warning: Variable '{var}' not found in data")
     
     # Update x-axis label on last subplot
-    fig.update_xaxes(title_text=f"Time ({time_column})", row=n_vars, col=1)
+    if time_column in ['datetime', 'real_time']:
+        x_label = "Time (datetime)"
+    else:
+        x_label = f"Time ({time_column})"
+    fig.update_xaxes(title_text=x_label, row=n_vars, col=1)
+    
+    # Format x-axis as datetime if using datetime column
+    if time_column in ['datetime', 'real_time'] and 'datetime' in df.columns:
+        for i in range(1, n_vars + 1):
+            fig.update_xaxes(type='date', row=i, col=1)
     
     # Update layout
     fig.update_layout(
@@ -343,11 +426,29 @@ def plot_by_session_plotly(df, variable, time_column='relative_time', save_path=
     
     fig = go.Figure()
     
+    # Convert time column to appropriate format for plotting
+    if time_column == 'datetime' and 'datetime' not in df.columns:
+        # Fallback to real_time if datetime not available
+        time_column = 'real_time'
+    
     for session in df['session_timestamp'].unique():
         session_df = df[df['session_timestamp'] == session]
+        
+        # Handle datetime columns
+        if time_column in ['datetime', 'real_time']:
+            # For datetime columns, use datetime objects directly (Plotly handles them)
+            if time_column in session_df.columns:
+                x_data = session_df[time_column]
+            elif 'datetime' in session_df.columns:
+                x_data = session_df['datetime']
+            else:
+                x_data = session_df['relative_time'].values
+        else:
+            x_data = session_df[time_column].values
+        
         fig.add_trace(
             go.Scatter(
-                x=session_df[time_column].values,
+                x=x_data,
                 y=session_df[variable].values,
                 mode='lines',
                 name=f'Session: {session}',
@@ -355,14 +456,24 @@ def plot_by_session_plotly(df, variable, time_column='relative_time', save_path=
             )
         )
     
+    # Set x-axis label
+    if time_column in ['datetime', 'real_time']:
+        x_label = 'Time (datetime)'
+    else:
+        x_label = f'Time ({time_column})'
+    
     fig.update_layout(
         title=f'{variable} by Recording Session',
-        xaxis_title=f'Time ({time_column})',
+        xaxis_title=x_label,
         yaxis_title=variable,
         hovermode='x unified',
         height=600,
         showlegend=True
     )
+    
+    # Format x-axis as datetime if using datetime column
+    if time_column in ['datetime', 'real_time'] and 'datetime' in df.columns:
+        fig.update_xaxes(type='date')
     
     # Save or show
     if save_path:
@@ -379,7 +490,7 @@ def plot_by_session_plotly(df, variable, time_column='relative_time', save_path=
 def list_available_variables(df):
     """List all available variables in the dataframe."""
     # Filter out metadata columns
-    metadata_cols = ['timestamp', 'real_time', 'relative_time', 'session_timestamp', 
+    metadata_cols = ['timestamp', 'real_time', 'relative_time', 'datetime', 'session_timestamp', 
                      'file_number', 'source_file']
     variables = [col for col in df.columns if col not in metadata_cols]
     return variables
@@ -436,8 +547,9 @@ Examples:
     
     parser.add_argument(
         '--time-column',
-        choices=['relative_time', 'real_time'],
-        help='Time column to use for x-axis (default: relative_time)',
+        choices=['relative_time', 'real_time', 'datetime'],
+        help='Time column to use for x-axis (default: relative_time). '
+             'Options: relative_time (seconds from start), real_time (datetime), datetime (datetime)',
         default='relative_time'
     )
     
@@ -496,8 +608,22 @@ def main():
         return
     
     print(f"\nTotal samples: {len(df)}")
-    print(f"Time range: {df['real_time'].iloc[0]} to {df['real_time'].iloc[-1]}")
-    print(f"Duration: {df['relative_time'].iloc[-1]:.2f} seconds ({df['relative_time'].iloc[-1]/60:.2f} minutes)")
+    
+    # Display time range (prefer datetime, fallback to real_time)
+    if 'datetime' in df.columns:
+        time_col = 'datetime'
+    elif 'real_time' in df.columns:
+        time_col = 'real_time'
+    else:
+        time_col = None
+    
+    if time_col:
+        print(f"Time range: {df[time_col].iloc[0]} to {df[time_col].iloc[-1]}")
+    else:
+        print(f"Time range: {df['timestamp'].iloc[0]:.2f} to {df['timestamp'].iloc[-1]:.2f} (timestamps)")
+    
+    if 'relative_time' in df.columns:
+        print(f"Duration: {df['relative_time'].iloc[-1]:.2f} seconds ({df['relative_time'].iloc[-1]/60:.2f} minutes)")
     print(f"\nSessions found: {len(session_info)}")
     for session, info in session_info.items():
         print(f"  {session}: {info['total_samples']} samples from {len(info['files'])} file(s)")
