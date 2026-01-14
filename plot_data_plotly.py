@@ -1,33 +1,25 @@
 #!/usr/bin/env python3
 """
-Script to read and plot data from RTDE CSV recording files.
+Interactive plotting script for RTDE CSV recording files using Plotly.
+
+Plotly provides interactive plots that work in web browsers without display issues.
 
 Usage:
-    python3 plot_data.py [options]
+    python3 plot_data_plotly.py [options]
 
 Examples:
     # Plot all CSV files in current directory
-    python3 plot_data.py
+    python3 plot_data_plotly.py
 
     # Plot specific files
-    python3 plot_data.py --files robot_data_2026-01-13_23-01-19_001.csv
+    python3 plot_data_plotly.py --files robot_data_2026-01-13_23-01-19_001.csv
 
     # Plot specific variables
-    python3 plot_data.py --variables actual_TCP_force_0,actual_TCP_force_1
+    python3 plot_data_plotly.py --variables actual_TCP_force_0,actual_TCP_force_1
 
-    # Use real time instead of relative time
-    python3 plot_data.py --time-column real_time
+    # Save as HTML instead of opening in browser
+    python3 plot_data_plotly.py --save-html plots.html
 """
-
-# Try to use an interactive backend for matplotlib (works with remote displays like AnyDesk)
-import matplotlib
-try:
-    matplotlib.use('Qt5Agg')  # Try Qt5Agg first (works with most displays)
-except:
-    try:
-        matplotlib.use('TkAgg')  # Fallback to TkAgg
-    except:
-        pass  # Use default backend
 
 import pandas as pd
 import glob
@@ -37,20 +29,17 @@ import argparse
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# Try to import matplotlib with helpful error message
+# Try to import plotly
 try:
-    import matplotlib.pyplot as plt
-    import numpy as np
-    MATPLOTLIB_AVAILABLE = True
-except ImportError as e:
-    MATPLOTLIB_AVAILABLE = False
-    print("Warning: matplotlib is not available. Plotting features will be disabled.")
-    print(f"Error: {e}")
-    print("\nTo fix this, try one of the following:")
-    print("  1. Install matplotlib: pip install matplotlib")
-    print("  2. Fix NumPy compatibility: pip install 'numpy<2' matplotlib")
-    print("  3. Or upgrade matplotlib: pip install --upgrade matplotlib")
-    print("\nYou can still use this script to read and save CSV data without plotting.")
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    import plotly.offline as pyo
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
+    print("Warning: plotly is not available. Please install it:")
+    print("  pip install plotly")
+    print("\nYou can still use this script to read and save CSV data.")
 
 
 def convert_timestamps_from_filename(csv_file):
@@ -176,68 +165,18 @@ def read_all_csv_files(pattern="robot_data_*.csv", directory=".", specific_files
         return None, None
 
 
-def plot_variables(df, variables, time_column='relative_time', figsize=(15, 10), save_path=None):
+def plot_tcp_force_plotly(df, time_column='relative_time', save_path=None, show=True):
     """
-    Plot specified variables over time.
-    
-    Args:
-        df: DataFrame with data
-        variables: List of variable names to plot
-        time_column: Column to use for x-axis ('relative_time' or 'real_time')
-        figsize: Figure size tuple
-        save_path: Path to save figure (optional)
-    """
-    if not MATPLOTLIB_AVAILABLE:
-        print("Error: matplotlib is not available. Cannot create plots.")
-        print("Please install matplotlib or fix NumPy compatibility issues.")
-        return None
-    
-    n_vars = len(variables)
-    if n_vars == 0:
-        print("No variables specified")
-        return None
-    
-    # Create subplots
-    fig, axes = plt.subplots(n_vars, 1, figsize=figsize, sharex=True)
-    if n_vars == 1:
-        axes = [axes]
-    
-    for i, var in enumerate(variables):
-        if var in df.columns:
-            # Convert to numpy arrays to avoid pandas indexing issues
-            x_data = np.array(df[time_column])
-            y_data = np.array(df[var])
-            axes[i].plot(x_data, y_data, linewidth=0.5)
-            axes[i].set_ylabel(var)
-            axes[i].grid(True, alpha=0.3)
-            axes[i].set_title(f'{var} over time')
-        else:
-            axes[i].text(0.5, 0.5, f'Variable "{var}" not found', 
-                        ha='center', va='center', transform=axes[i].transAxes)
-    
-    axes[-1].set_xlabel(f'Time ({time_column})')
-    plt.tight_layout()
-    
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"Saved: {save_path}")
-    
-    return fig
-
-
-def plot_tcp_force(df, time_column='relative_time', figsize=(15, 8), save_path=None):
-    """
-    Plot TCP force components.
+    Plot TCP force components using Plotly.
     
     Args:
         df: DataFrame with data
         time_column: Column to use for x-axis
-        figsize: Figure size tuple
-        save_path: Path to save figure (optional)
+        save_path: Path to save HTML file (optional)
+        show: Whether to open in browser (default: True)
     """
-    if not MATPLOTLIB_AVAILABLE:
-        print("Error: matplotlib is not available. Cannot create plots.")
-        print("Please install matplotlib or fix NumPy compatibility issues.")
+    if not PLOTLY_AVAILABLE:
+        print("Error: plotly is not available. Cannot create plots.")
         return None
     
     force_cols = [col for col in df.columns if 'actual_TCP_force' in col]
@@ -246,59 +185,152 @@ def plot_tcp_force(df, time_column='relative_time', figsize=(15, 8), save_path=N
         print("No TCP force columns found")
         return None
     
-    fig, axes = plt.subplots(2, 1, figsize=figsize, sharex=True)
+    # Create subplots
+    fig = make_subplots(
+        rows=2, cols=1,
+        subplot_titles=('TCP Forces (X, Y, Z)', 'TCP Torques (Rx, Ry, Rz)'),
+        vertical_spacing=0.1
+    )
     
-    # Convert time column to numpy array once
-    x_data = np.array(df[time_column])
+    # Convert time column to numpy array for plotting
+    x_data = df[time_column].values
     
     # Plot forces (first 3 components)
+    force_labels = ['X', 'Y', 'Z']
     for i in range(min(3, len(force_cols))):
         if f'actual_TCP_force_{i}' in df.columns:
-            y_data = np.array(df[f'actual_TCP_force_{i}'])
-            axes[0].plot(x_data, y_data, 
-                        label=f'Force {i} ({"XYZ"[i]})', linewidth=0.5)
-    
-    axes[0].set_ylabel('Force (N)')
-    axes[0].set_title('TCP Forces (X, Y, Z)')
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
+            fig.add_trace(
+                go.Scatter(
+                    x=x_data,
+                    y=df[f'actual_TCP_force_{i}'].values,
+                    mode='lines',
+                    name=f'Force {force_labels[i]}',
+                    line=dict(width=1)
+                ),
+                row=1, col=1
+            )
     
     # Plot moments (last 3 components)
     for i in range(3, min(6, len(force_cols))):
         if f'actual_TCP_force_{i}' in df.columns:
-            y_data = np.array(df[f'actual_TCP_force_{i}'])
-            axes[1].plot(x_data, y_data, 
-                        label=f'Torque {i-3} ({"XYZ"[i-3]})', linewidth=0.5)
+            fig.add_trace(
+                go.Scatter(
+                    x=x_data,
+                    y=df[f'actual_TCP_force_{i}'].values,
+                    mode='lines',
+                    name=f'Torque {force_labels[i-3]}',
+                    line=dict(width=1)
+                ),
+                row=2, col=1
+            )
     
-    axes[1].set_ylabel('Torque (Nm)')
-    axes[1].set_xlabel(f'Time ({time_column})')
-    axes[1].set_title('TCP Torques (Rx, Ry, Rz)')
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
+    # Update axes labels
+    fig.update_xaxes(title_text=f"Time ({time_column})", row=2, col=1)
+    fig.update_yaxes(title_text="Force (N)", row=1, col=1)
+    fig.update_yaxes(title_text="Torque (Nm)", row=2, col=1)
     
-    plt.tight_layout()
+    # Update layout
+    fig.update_layout(
+        height=800,
+        title_text="TCP Forces and Torques",
+        hovermode='x unified',
+        showlegend=True
+    )
     
+    # Save or show
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        fig.write_html(save_path)
         print(f"Saved: {save_path}")
+        if show:
+            fig.show()
+    elif show:
+        fig.show()
     
     return fig
 
 
-def plot_by_session(df, variable, time_column='relative_time', figsize=(15, 6), save_path=None):
+def plot_variables_plotly(df, variables, time_column='relative_time', save_path=None, show=True):
     """
-    Plot a variable grouped by recording session.
+    Plot specified variables using Plotly.
+    
+    Args:
+        df: DataFrame with data
+        variables: List of variable names to plot
+        time_column: Column to use for x-axis
+        save_path: Path to save HTML file (optional)
+        show: Whether to open in browser (default: True)
+    """
+    if not PLOTLY_AVAILABLE:
+        print("Error: plotly is not available. Cannot create plots.")
+        return None
+    
+    if not variables:
+        print("No variables specified")
+        return None
+    
+    # Create subplots
+    n_vars = len(variables)
+    fig = make_subplots(
+        rows=n_vars, cols=1,
+        subplot_titles=variables,
+        vertical_spacing=0.05
+    )
+    
+    x_data = df[time_column].values
+    
+    for i, var in enumerate(variables):
+        if var in df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=x_data,
+                    y=df[var].values,
+                    mode='lines',
+                    name=var,
+                    line=dict(width=1),
+                    showlegend=True
+                ),
+                row=i+1, col=1
+            )
+            fig.update_yaxes(title_text=var, row=i+1, col=1)
+        else:
+            print(f"Warning: Variable '{var}' not found in data")
+    
+    # Update x-axis label on last subplot
+    fig.update_xaxes(title_text=f"Time ({time_column})", row=n_vars, col=1)
+    
+    # Update layout
+    fig.update_layout(
+        height=300 * n_vars,
+        title_text="Variable Plots",
+        hovermode='x unified',
+        showlegend=True
+    )
+    
+    # Save or show
+    if save_path:
+        fig.write_html(save_path)
+        print(f"Saved: {save_path}")
+        if show:
+            fig.show()
+    elif show:
+        fig.show()
+    
+    return fig
+
+
+def plot_by_session_plotly(df, variable, time_column='relative_time', save_path=None, show=True):
+    """
+    Plot a variable grouped by recording session using Plotly.
     
     Args:
         df: DataFrame with data
         variable: Variable name to plot
         time_column: Column to use for x-axis
-        figsize: Figure size tuple
-        save_path: Path to save figure (optional)
+        save_path: Path to save HTML file (optional)
+        show: Whether to open in browser (default: True)
     """
-    if not MATPLOTLIB_AVAILABLE:
-        print("Error: matplotlib is not available. Cannot create plots.")
-        print("Please install matplotlib or fix NumPy compatibility issues.")
+    if not PLOTLY_AVAILABLE:
+        print("Error: plotly is not available. Cannot create plots.")
         return None
     
     if 'session_timestamp' not in df.columns:
@@ -309,27 +341,37 @@ def plot_by_session(df, variable, time_column='relative_time', figsize=(15, 6), 
         print(f"Variable '{variable}' not found in data")
         return None
     
-    fig, ax = plt.subplots(figsize=figsize)
+    fig = go.Figure()
     
     for session in df['session_timestamp'].unique():
         session_df = df[df['session_timestamp'] == session]
-        # Convert to numpy arrays to avoid pandas indexing issues
-        x_data = np.array(session_df[time_column])
-        y_data = np.array(session_df[variable])
-        ax.plot(x_data, y_data, 
-               label=f'Session: {session}', linewidth=0.5, alpha=0.7)
+        fig.add_trace(
+            go.Scatter(
+                x=session_df[time_column].values,
+                y=session_df[variable].values,
+                mode='lines',
+                name=f'Session: {session}',
+                line=dict(width=1)
+            )
+        )
     
-    ax.set_xlabel(f'Time ({time_column})')
-    ax.set_ylabel(variable)
-    ax.set_title(f'{variable} by Recording Session')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    fig.update_layout(
+        title=f'{variable} by Recording Session',
+        xaxis_title=f'Time ({time_column})',
+        yaxis_title=variable,
+        hovermode='x unified',
+        height=600,
+        showlegend=True
+    )
     
-    plt.tight_layout()
-    
+    # Save or show
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        fig.write_html(save_path)
         print(f"Saved: {save_path}")
+        if show:
+            fig.show()
+    elif show:
+        fig.show()
     
     return fig
 
@@ -346,24 +388,24 @@ def list_available_variables(df):
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Read and plot data from RTDE CSV recording files",
+        description="Interactive plotting script for RTDE CSV files using Plotly",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Plot all CSV files in current directory
-  python3 plot_data.py
+  python3 plot_data_plotly.py
 
   # Plot specific files
-  python3 plot_data.py --files robot_data_2026-01-13_23-01-19_001.csv robot_data_2026-01-13_23-01-19_002.csv
+  python3 plot_data_plotly.py --files robot_data_2026-01-13_23-01-19_001.csv
 
   # Plot specific variables
-  python3 plot_data.py --variables actual_TCP_force_0,actual_TCP_force_1
+  python3 plot_data_plotly.py --variables actual_TCP_force_0,actual_TCP_force_1
 
-  # Use real time instead of relative time
-  python3 plot_data.py --time-column real_time
+  # Save as HTML instead of opening in browser
+  python3 plot_data_plotly.py --save-html plots.html
 
-  # Save plots without displaying
-  python3 plot_data.py --no-show --save-dir plots/
+  # Save without opening
+  python3 plot_data_plotly.py --save-html plots.html --no-show
         """
     )
     
@@ -407,15 +449,15 @@ Examples:
     )
     
     parser.add_argument(
-        '--save-dir',
-        help='Directory to save plots (default: current directory)',
+        '--save-html',
+        help='Save plots as HTML file instead of opening in browser',
         default=None
     )
     
     parser.add_argument(
         '--no-show',
         action='store_true',
-        help='Do not display plots (only save them)'
+        help='Do not open plots in browser (only save if --save-html is specified)'
     )
     
     parser.add_argument(
@@ -436,6 +478,11 @@ Examples:
 def main():
     """Main entry point."""
     args = parse_args()
+    
+    if not PLOTLY_AVAILABLE:
+        print("Error: plotly is not installed.")
+        print("Install it with: pip install plotly")
+        return
     
     # Read CSV files
     df, session_info = read_all_csv_files(
@@ -468,70 +515,57 @@ def main():
         df.to_csv(args.save_csv, index=False)
         print(f"\nSaved combined data to: {args.save_csv}")
     
-    # Determine save directory
-    save_dir = args.save_dir if args.save_dir else '.'
-    if args.save_dir and not os.path.exists(save_dir):
-        os.makedirs(save_dir)
+    # Determine show/save settings
+    show_plots = not args.no_show
+    save_html = args.save_html if args.save_html else None
     
-    # Generate plots (only if matplotlib is available)
+    # Generate plots
     figures = []
     
-    if not MATPLOTLIB_AVAILABLE:
-        print("\nSkipping plot generation (matplotlib not available)")
-        print("Data reading and CSV export features are still available.")
+    # Plot TCP forces
+    if args.plot_type in ['tcp_force', 'all']:
+        if 'actual_TCP_force_0' in df.columns:
+            html_path = save_html if save_html else 'tcp_forces.html'
+            fig = plot_tcp_force_plotly(df, time_column=args.time_column, 
+                                       save_path=html_path, show=show_plots)
+            if fig:
+                figures.append(fig)
+                if not save_html:
+                    save_html = 'tcp_forces.html'  # Auto-save if not specified
+    
+    # Plot specific variables
+    if args.plot_type in ['variables', 'all']:
+        if args.variables:
+            variables = [v.strip() for v in args.variables.split(',')]
+            html_path = save_html if save_html else 'variables.html'
+            fig = plot_variables_plotly(df, variables, time_column=args.time_column,
+                                       save_path=html_path, show=show_plots)
+            if fig:
+                figures.append(fig)
+        elif args.plot_type == 'variables':
+            print("\nWarning: --variables not specified, skipping variable plot")
+    
+    # Plot by session
+    if args.plot_type in ['by_session', 'all']:
+        if 'session_timestamp' in df.columns:
+            # Find a variable to plot
+            variables = list_available_variables(df)
+            if variables:
+                var = variables[0]  # Use first available variable
+                html_path = save_html if save_html else f'{var}_by_session.html'
+                fig = plot_by_session_plotly(df, var, time_column=args.time_column,
+                                            save_path=html_path, show=show_plots)
+                if fig:
+                    figures.append(fig)
+    
+    if figures:
+        print(f"\nGenerated {len(figures)} plot(s)")
+        if save_html:
+            print(f"Plots saved to HTML file(s)")
+        if show_plots and not save_html:
+            print("Plots opened in browser")
     else:
-        # Plot TCP forces
-        if args.plot_type in ['tcp_force', 'all']:
-            if 'actual_TCP_force_0' in df.columns:
-                save_path = os.path.join(save_dir, 'tcp_forces.png') if save_dir else None
-                fig = plot_tcp_force(df, time_column=args.time_column, save_path=save_path)
-                if fig:
-                    figures.append(fig)
-        
-        # Plot specific variables
-        if args.plot_type in ['variables', 'all']:
-            if args.variables:
-                variables = [v.strip() for v in args.variables.split(',')]
-                save_path = os.path.join(save_dir, 'variables.png') if save_dir else None
-                fig = plot_variables(df, variables, time_column=args.time_column, save_path=save_path)
-                if fig:
-                    figures.append(fig)
-            elif args.plot_type == 'variables':
-                print("\nWarning: --variables not specified, skipping variable plot")
-        
-        # Plot by session
-        if args.plot_type in ['by_session', 'all']:
-            if 'session_timestamp' in df.columns:
-                # Find a variable to plot
-                variables = list_available_variables(df)
-                if variables:
-                    var = variables[0]  # Use first available variable
-                    save_path = os.path.join(save_dir, f'{var}_by_session.png') if save_dir else None
-                    fig = plot_by_session(df, var, time_column=args.time_column, save_path=save_path)
-                    if fig:
-                        figures.append(fig)
-        
-        # Show plots (only if display is available)
-        if not args.no_show and figures:
-            try:
-                # Check if we're using an interactive backend
-                backend = matplotlib.get_backend()
-                if backend.lower() in ['agg', 'svg', 'pdf', 'ps']:
-                    # Non-interactive backend - can't show, just close
-                    print("\nUsing non-interactive backend. Plots saved but not displayed.")
-                    print("To view plots, open the PNG files directly.")
-                    plt.close('all')
-                else:
-                    # Interactive backend - try to show
-                    plt.show()
-            except Exception as e:
-                # Handle any errors gracefully
-                print(f"\nNote: Could not display plots interactively: {e}")
-                print("Plots have been saved. You can view them by opening the PNG files.")
-                plt.close('all')
-        elif args.no_show and figures:
-            plt.close('all')
-            print("\nPlots saved (not displayed)")
+        print("\nNo plots were generated")
 
 
 if __name__ == "__main__":
